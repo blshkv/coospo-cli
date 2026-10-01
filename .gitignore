@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+
+# Downloaded activities and device files
+fit_files/
+*.fit
+*.part
+filelist.txt
+Setting.json
+
+# Bluetooth captures and Android bug reports (contain personal data)
+bugreport*.zip
+*.log
+*.log.last
+*.btsnoop
+*.pcap
+*.pcapng
