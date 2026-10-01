@@ -30,8 +30,26 @@ answer their YMODEM-style commands.
 | `0x180A`, `0x180F` | standard | read | Device Information, Battery |
 
 The app enables notifications on `fda1`–`fda4` and `fd09`, then writes all frames with
-write-without-response. The app requested an ATT MTU of 200; the protocol works at other MTUs too
-(data packets simply get shorter).
+write-without-response. The protocol works at any ATT MTU; data packets simply get shorter at
+smaller MTUs.
+
+### 1.1 Link layer — observed
+
+What the CoospoRide session (Android phone as central) showed below the GATT level:
+
+| Item | Observed |
+|---|---|
+| ATT MTU | the **device** starts the MTU exchange requesting 200; the phone offers 517, so 200 is used |
+| LE features of the device | mask `0x4925`: LE Data Packet Length Extension, LE 2M PHY and LE Coded PHY are supported |
+| Data Length Extension | requested by the phone; afterwards max 199 bytes phone → device and 204 bytes device → phone |
+| PHY | never changed: no LE Set PHY or PHY Update Complete in the capture, so the link stays on 1M |
+| Preferred connection parameters (GAP `0x2A04`) | interval 20–40 ms, latency 0, supervision timeout 4 s |
+| Connection parameters used | 18.75 ms at connection; 48.75 ms with latency 5 during the file transfers |
+
+With MTU 200, one data notification is 3 (ATT header) + 197 bytes, which plus the 4-byte L2CAP
+header is exactly 204 bytes, so each `fda4` data packet travels in a single link-layer packet.
+It's not visible in the log who requested the change to 48.75 ms: the device sent no L2CAP
+connection parameter update request.
 
 ## 2. Frame format (`fda1`, `fda2`, `fda3`) — confirmed
 
@@ -112,7 +130,7 @@ guesses.
 | 4 | string | `V1.5.0` | firmware revision |
 | 5 | string | `1234567` | serial number (also in the advertised name) |
 | 6 | string | `V1.0` | ? |
-| 7 | varint | 200 | max MTU? |
+| 7 | varint | 200 | ATT MTU? (matches the MTU the device requests, §1.1) |
 
 ```
 7e 10 00 2c 00 01 08 02 10 03 1a 05 56 31 2e 34 31 22 06 56 31 2e 35 2e 30
@@ -176,8 +194,11 @@ fda2  ← 7e 63 00 05 5e 02 7f                              ack
 - FILE_CONFIRM does not appear to delete anything: a fetched FIT file is still listed afterwards.
   What happens without FILE_CONFIRM, or with `{1: 0}`, is unknown.
 
-Reference transfer: an 82 KB FIT file took about 8 s on Linux/BlueZ, including scanning and
-connecting.
+Reference transfers:
+- CoospoRide (Android): `Setting.json` (14.6 KB) streamed in about 2 s, roughly 60 kbit/s of file
+  data, at a 48.75 ms connection interval with DLE and 1M PHY (§1.1). The connection interval
+  probably limits this more than the packet size does.
+- coospo-cli (Linux/BlueZ): an 82 KB FIT file took about 8 s, including scanning and connecting.
 
 ### 6.2 Upload (app → device) — partially observed, not implemented
 
