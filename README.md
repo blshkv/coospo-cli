@@ -35,13 +35,13 @@ Requires Python 3.9+ and a Bluetooth LE adapter. It uses [bleak](https://github.
 it should run on Linux (BlueZ), Windows and macOS; so far it's been tested on Linux.
 
 ```
+pipx install coospo-cli
+```
+
+`pip install coospo-cli` works too. For the latest development version:
+
+```
 pipx install git+https://github.com/blshkv/coospo-cli
-```
-
-or, from a checkout:
-
-```
-pip install .
 ```
 
 ## Usage
@@ -74,10 +74,11 @@ Run `coospo --help` or `coospo COMMAND --help` for all options.
 
 The CS500 doesn't use the Nordic UART/YMODEM protocol of older models. It uses vendor service
 `0xFDA0` with HDLC-like frames carrying protobuf payloads, plus a separate raw data channel for file
-contents. [PROTOCOL.md](PROTOCOL.md) documents everything known so far.
+contents. [PROTOCOL.md](https://github.com/blshkv/coospo-cli/blob/main/PROTOCOL.md) documents everything known so far.
 
-`tools/gatt_dump.py` lists a device's GATT services and characteristics, which is a quick way to
-check whether another model uses the same service:
+`tools/gatt_dump.py` (in the repository, not installed with the package) lists a device's GATT
+services and characteristics, which is a quick way to check whether another model uses the same
+service:
 
 ```
 python3 tools/gatt_dump.py CS600
@@ -106,7 +107,7 @@ python3 -m unittest discover -s tests
 
 ## License
 
-GNU General Public License v3.0 or later, see [LICENSE](LICENSE).
+GNU General Public License v3.0 or later, see [LICENSE](https://github.com/blshkv/coospo-cli/blob/main/LICENSE).
 
 ## Acknowledgements
 
