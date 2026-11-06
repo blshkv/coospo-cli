@@ -4,8 +4,9 @@ import asyncio
 import datetime
 import os
 import struct
+import sys
 
-from bleak import BleakScanner
+from bleak import BleakClient, BleakScanner
 
 from .protocol import (
     BATTERY_LEVEL_UUID, CMD_DEVICE_INFO, CMD_FETCH_FILE, CMD_FILE_CONFIRM, CMD_FILE_DONE,
@@ -16,6 +17,34 @@ from .protocol import (
 
 SUPPORTED_MODELS = ("CS500", "CS600")  # advertised as "<model>-<serial>"
 TIMEOUT = 10.0             # seconds of silence before giving up
+
+
+def device_matcher(name=None, address=None):
+    '''Return a scanner filter f(device, advertisement) for the wanted device.'''
+    def match(d, ad):
+        if address:
+            return d.address.lower() == address.lower()
+        device_name = d.name or ad.local_name
+        if not device_name:
+            return False
+        return name in device_name if name else device_name.startswith(SUPPORTED_MODELS)
+
+    return match
+
+
+async def run_session(device, func, *args):
+    '''Connect to a scanned device and return await func(dev, *args); 1 on connection errors.'''
+    try:
+        async with BleakClient(device, timeout=60.0) as client:
+            print(f"Connected to {device.name or device.address}")
+            dev = CoospoDevice()
+            await dev.start(client)
+            return await func(dev, *args)
+    except asyncio.TimeoutError:
+        print("Error: no response from the device.", file=sys.stderr)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+    return 1
 
 
 class CoospoDevice:
@@ -104,13 +133,7 @@ class CoospoDevice:
         if address:
             return await BleakScanner.find_device_by_address(address, timeout=timeout)
 
-        def match(d, ad):
-            device_name = d.name or ad.local_name
-            if not device_name:
-                return False
-            return name in device_name if name else device_name.startswith(SUPPORTED_MODELS)
-
-        return await BleakScanner.find_device_by_filter(match, timeout=timeout)
+        return await BleakScanner.find_device_by_filter(device_matcher(name), timeout=timeout)
 
     async def start(self, client):
         self.client = client

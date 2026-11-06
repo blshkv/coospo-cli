@@ -1,0 +1,3 @@
+include PROTOCOL.md
+recursive-include contrib *
+recursive-include tools *.py

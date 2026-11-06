@@ -2,9 +2,9 @@ import os
 import tempfile
 import unittest
 
-from coospo.cli import extract_fit_filenames
 from coospo.device import CoospoDevice
 from coospo.protocol import build_frame, crc16_ccitt_false, parse_frame, pb_decode, zigzag
+from coospo.sync import extract_fit_filenames
 
 # Example frames from PROTOCOL.md (made-up values, valid lengths and CRCs).
 DEVICE_INFO_REQ = '7e 00 00 07 00 01 84 bd 7f'

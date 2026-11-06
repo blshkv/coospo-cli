@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""Upload a FIT file to Strava; meant to be used as `coospo watch --post-sync`.
+
+  strava-upload auth        one-time: authorize this script (opens the browser)
+  strava-upload test        check the credentials by refreshing the access token
+  strava-upload FILE        upload FILE; exit 0 on success and when Strava already has the activity
+
+Setup: create an API application at https://www.strava.com/settings/api with the authorization
+callback domain "localhost", then run `strava-upload auth` and enter its client ID and secret.
+Tokens are kept in ~/.config/coospo/strava.json (readable by you only; see contrib/strava.json
+for the layout, normally written by `auth`). The activity gets
+Strava's default name; the file name is sent as external_id so Strava can spot duplicates.
+Only the Python standard library is used.
+"""
+
+import http.server
+import json
+import mimetypes
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+import webbrowser
+
+API = os.environ.get('STRAVA_API', 'https://www.strava.com')   # overridable for testing
+TOKEN_FILE = os.path.join(os.environ.get('XDG_CONFIG_HOME') or os.path.expanduser('~/.config'),
+                          'coospo', 'strava.json')
+POLL_SECONDS = 120   # how long to wait for Strava to process an upload
+
+
+def fail(message, code=1):
+    print(f"strava-upload: {message}", file=sys.stderr)
+    sys.exit(code)
+
+
+def request(method, url, data=None, headers=None):
+    '''Return (status, parsed JSON or {}); network errors exit 1 so the caller retries later.'''
+    req = urllib.request.Request(url, data=data, headers=headers or {}, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as response:
+            status, body = response.status, response.read()
+    except urllib.error.HTTPError as e:
+        status, body = e.code, e.read()
+    except OSError as e:
+        fail(f"cannot reach Strava: {e}")
+    try:
+        return status, json.loads(body)
+    except ValueError:
+        return status, {}
+
+
+def load_tokens():
+    try:
+        with open(TOKEN_FILE) as file:
+            return json.load(file)
+    except FileNotFoundError:
+        fail(f"{TOKEN_FILE} not found; run 'strava-upload auth' first", 2)
+
+
+def save_tokens(tokens):
+    os.makedirs(os.path.dirname(TOKEN_FILE), exist_ok=True)
+    tmp = TOKEN_FILE + '.tmp'
+    with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), 'w') as file:
+        json.dump(tokens, file, indent=2)
+    os.replace(tmp, TOKEN_FILE)
+
+
+def token_request(tokens, **fields):
+    '''POST to the OAuth token endpoint and store the credentials it returns.'''
+    fields.update(client_id=tokens['client_id'], client_secret=tokens['client_secret'])
+    status, reply = request('POST', f'{API}/oauth/token', urllib.parse.urlencode(fields).encode())
+    if status != 200 or 'access_token' not in reply:
+        fail(f"token request failed ({status}): {reply.get('message', reply)}")
+    for key in ('access_token', 'refresh_token', 'expires_at'):
+        tokens[key] = reply[key]
+    save_tokens(tokens)
+
+
+def authorize():
+    client_id = input('Client ID: ').strip()
+    client_secret = input('Client secret: ').strip()
+
+    class Callback(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            if 'code' in query or 'error' in query:   # not for favicon requests and the like
+                self.server.query = query
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'strava-upload is authorized; you can close this tab.\n')
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(('127.0.0.1', 0), Callback)
+    server.timeout = 5
+    server.query = None
+    redirect = f'http://localhost:{server.server_port}/'
+    url = f'{API}/oauth/authorize?' + urllib.parse.urlencode({
+        'client_id': client_id, 'response_type': 'code', 'redirect_uri': redirect,
+        'approval_prompt': 'auto', 'scope': 'activity:write'})
+    print(f"Open this URL if the browser does not start:\n{url}")
+    webbrowser.open(url)
+    deadline = time.monotonic() + 300
+    while server.query is None:
+        if time.monotonic() > deadline:
+            fail("no answer from the browser after 5 minutes")
+        server.handle_request()
+    query = server.query
+    if 'code' not in query:
+        fail(f"authorization refused: {query.get('error', ['no code'])[0]}")
+    if 'activity:write' not in query.get('scope', ['activity:write'])[0]:
+        fail("the activity:write permission was not granted; run auth again and keep it ticked")
+    token_request({'client_id': client_id, 'client_secret': client_secret},
+                  code=query['code'][0], grant_type='authorization_code')
+    print(f"Done. Tokens saved to {TOKEN_FILE}")
+
+
+def test():
+    tokens = load_tokens()
+    token_request(tokens, grant_type='refresh_token', refresh_token=tokens['refresh_token'])
+    expires = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(tokens['expires_at']))
+    print(f"Strava accepted the credentials; the new access token is valid until {expires}.")
+
+
+def access_token():
+    tokens = load_tokens()
+    if tokens['expires_at'] < time.time() + 60:
+        token_request(tokens, grant_type='refresh_token', refresh_token=tokens['refresh_token'])
+    return tokens['access_token']
+
+
+def multipart(fields, file_field, path):
+    boundary = uuid.uuid4().hex
+    parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
+             for k, v in fields.items()]
+    with open(path, 'rb') as file:
+        content = file.read()
+    mime = mimetypes.guess_type(path)[0] or 'application/octet-stream'
+    parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="{file_field}"; '
+                 f'filename="{os.path.basename(path)}"\r\nContent-Type: {mime}\r\n\r\n'.encode()
+                 + content + b'\r\n')
+    parts.append(f'--{boundary}--\r\n'.encode())
+    return b''.join(parts), f'multipart/form-data; boundary={boundary}'
+
+
+def is_duplicate(error):
+    return bool(error) and 'duplicate' in error.lower()
+
+
+def upload(path):
+    token = access_token()
+    auth = {'Authorization': f'Bearer {token}'}
+    name = os.path.basename(path)
+    body, content_type = multipart({'data_type': 'fit', 'external_id': name}, 'file', path)
+    status, reply = request('POST', f'{API}/api/v3/uploads', body, dict(auth, **{'Content-Type': content_type}))
+    if status == 429 or status >= 500:
+        fail(f"Strava is busy or unavailable ({status}); will retry")
+    if status >= 400:
+        if is_duplicate(reply.get('error')) or any(is_duplicate(e.get('code')) or is_duplicate(e.get('field'))
+                                                   for e in reply.get('errors', [])):
+            print(f"{name}: Strava already has this activity")
+            return
+        fail(f"upload of {name} rejected ({status}): {reply.get('message', reply)}")
+
+    deadline = time.monotonic() + POLL_SECONDS
+    while True:
+        if is_duplicate(reply.get('error')):
+            print(f"{name}: Strava already has this activity")
+            return
+        if reply.get('error'):
+            fail(f"{name}: {reply['error']}")
+        if reply.get('activity_id'):
+            print(f"{name}: https://www.strava.com/activities/{reply['activity_id']}")
+            return
+        if time.monotonic() > deadline:
+            fail(f"{name}: still processing after {POLL_SECONDS} s; will retry")
+        time.sleep(2)
+        status, reply = request('GET', f"{API}/api/v3/uploads/{reply['id']}", headers=auth)
+        if status != 200:
+            fail(f"checking the upload failed ({status})")
+
+
+def main(argv):
+    if argv == ['auth']:
+        authorize()
+    elif argv == ['test']:
+        test()
+    elif len(argv) == 1 and not argv[0].startswith('-'):
+        upload(argv[0])
+    else:
+        fail("usage: strava-upload auth | test | FILE", 2)
+
+
+if __name__ == '__main__':
+    main(sys.argv[1:])

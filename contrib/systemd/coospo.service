@@ -1,0 +1,15 @@
+# Install as a user service:
+#   cp contrib/systemd/coospo.service ~/.config/systemd/user/
+#   systemctl --user enable --now coospo
+# Run `coospo init` once first, and put post_sync etc. into ~/.config/coospo/config.toml.
+[Unit]
+Description=Sync the COOSPO bike computer when it is in range
+After=bluetooth.target
+
+[Service]
+ExecStart=%h/.local/bin/coospo watch
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target

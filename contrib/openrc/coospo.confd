@@ -1,0 +1,4 @@
+# Install as /etc/conf.d/coospo
+# The user `coospo watch` runs as. It needs to be in the bluetooth group, and `coospo init` and
+# ~/.config/coospo/config.toml belong to this user's home directory.
+coospo_user="alice"

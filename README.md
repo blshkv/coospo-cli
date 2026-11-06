@@ -6,7 +6,7 @@ CoospoRide app.
 
 ```
 $ coospo info
-Searching for CS500 or CS600...
+Searching for Coospo compatible device...
 Connected to CS500-1234567
 Model:     CS500
 Serial:    1234567
@@ -31,7 +31,7 @@ If you own a CS600 or another model, please report whether it works in an
 
 ## Installation
 
-Requires Python 3.9+ and a Bluetooth LE adapter. It uses [bleak](https://github.com/hbldh/bleak), so
+Requires Python 3.13+ and a Bluetooth LE adapter. It uses [bleak](https://github.com/hbldh/bleak), so
 it should run on Linux (BlueZ), Windows and macOS; so far it's been tested on Linux.
 
 ```
@@ -97,6 +97,31 @@ what the official app does:
 **Don't attach the log or the bug report to a public issue.** They contain personal data such as
 your location, device addresses and ride history. Describe what you did and share the relevant
 frames instead.
+
+## Automatic sync
+
+`coospo sync` downloads the activities the index (`~/.local/state/coospo/index.db`) does not know
+yet. `coospo watch` does the same whenever the device comes into range, at most once per `--interval`
+(default 10 minutes). Both can pass each new activity to a command, e.g. an uploader:
+
+```
+coospo init                                  # once: ignore the rides already on the device
+coospo watch --post-sync ~/bin/strava-upload
+```
+
+`contrib/strava-upload` is such an uploader for Strava (standard library only). Create an API
+application at strava.com/settings/api with the callback domain `localhost`, copy the script to
+`~/bin`, and run `strava-upload auth` once.
+
+- The command is run as `CMD FILE`, with `COOSPO_FILE`, `COOSPO_SERIAL` and `COOSPO_ACTIVITY_TIME`
+  in the environment. If it exits non-zero it is retried with growing delays (1 min up to 6 h).
+- Downloaded files are deleted once the command succeeds. With `--output DIR` they are kept there.
+  Without `--post-sync`, files are always kept (default `~/.local/share/coospo/fit_files`).
+- A file that is still being recorded is not a complete FIT file; it is skipped and fetched again later.
+- Settings can go in `~/.config/coospo/config.toml` (or `$XDG_CONFIG_HOME/coospo/config.toml`, or
+  the file given with `-c`): `name`, `address`, `scan_timeout`, `output`, `post_sync`, `interval`.
+  See `contrib/config.toml` for a commented sample.
+- `contrib/` has a systemd user unit and an OpenRC init script that run `coospo watch`.
 
 ## Development
 

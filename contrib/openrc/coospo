@@ -1,0 +1,24 @@
+#!/sbin/openrc-run
+# Install: cp contrib/openrc/coospo /etc/init.d/ && rc-update add coospo default
+# OpenRC has no user services, so this runs as a normal user. Set the user in
+# /etc/conf.d/coospo (see coospo.confd); that user must be in the bluetooth group and
+# must have run `coospo init` and have ~/.config/coospo/config.toml.
+
+description="Sync the COOSPO bike computer when it is in range"
+
+: ${coospo_user:=root}
+
+command="/usr/bin/coospo"
+command_args="watch"
+command_user="${coospo_user}"
+command_background=true
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/${RC_SVCNAME}.log"
+error_log="/var/log/${RC_SVCNAME}.log"
+supervisor=supervise-daemon
+respawn_delay=30
+respawn_max=0   # never give up: the watcher should keep waiting for the device
+
+depend() {
+	need bluetooth
+}

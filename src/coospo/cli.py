@@ -1,28 +1,25 @@
-"""Command-line interface: coospo info | sync | get."""
+"""Command-line interface: coospo info | sync | init | watch | get."""
 
 import argparse
 import asyncio
 import os
-import re
+import signal
 import sys
 import warnings
 
-from bleak import BleakClient
-
 from . import __version__
-from .device import SUPPORTED_MODELS, CoospoDevice
+from .config import config_path, data_dir, index_path, load_config, staging_dir
+from .device import CoospoDevice, run_session
+from .index import Index
+from .sync import init_job, run_hooks, sync_job
+from .watch import watch
 
-FIT_FOLDER = "fit_files"   # default output directory
+# Settings that can also be given in the config file; None on the command line means "not given".
+DEFAULTS = {'name': None, 'address': None, 'scan_timeout': 30.0, 'output': None,
+            'post_sync': None, 'interval': 600.0}
 
 
-def extract_fit_filenames(file_path):
-    '''filelist.txt has one "YYYYMMDDhhmmss.fit <size>" entry per line.'''
-    pattern = re.compile(r'\d{14}\.fit')
-    with open(file_path, 'r') as file:
-        return sorted(m.group(0) for line in file if (m := pattern.search(line)))
-
-
-async def cmd_info(dev, args):
+async def show_info(dev, args):
     model = await dev.read_model()
     hw, fw, serial = await dev.read_device_info()
     battery = await dev.read_battery()
@@ -36,49 +33,67 @@ async def cmd_info(dev, args):
     return 0
 
 
-async def cmd_sync(dev, args):
-    if not await dev.fetch_file('filelist.txt', args.output):
-        return 1
-    names = extract_fit_filenames(os.path.join(args.output, 'filelist.txt'))
-    new = [n for n in names if not os.path.exists(os.path.join(args.output, n))]
-    print(f"{len(names)} activities on the device, {len(new)} new.")
-    failed = 0
-    for i, name in enumerate(new, 1):
-        print(f"[{i}/{len(new)}] {name}")
-        if not await dev.fetch_file(name, args.output):
-            failed += 1
-    print(f"Done: {len(new) - failed} downloaded, {len(names) - len(new)} already present, {failed} failed.")
-    return 1 if failed else 0
-
-
-async def cmd_get(dev, args):
+async def get_files(dev, args):
     failed = 0
     for name in args.files:
-        if not await dev.fetch_file(name, args.output):
+        if not await dev.fetch_file(name, os.path.expanduser(args.output or default_output())):
             failed += 1
     return 1 if failed else 0
 
 
-async def main(args):
-    dev = CoospoDevice()
-    target = args.address or args.name or ' or '.join(SUPPORTED_MODELS)
+def default_output():
+    return os.path.join(data_dir(), 'fit_files')
+
+
+def keep_dir(args):
+    '''Where downloaded activities stay: the output directory, or nowhere if a post-sync command
+    takes them and no output directory was asked for.'''
+    return os.path.expanduser(args.output) if args.output else (None if args.post_sync else default_output())
+
+
+async def with_device(args, func, *func_args):
+    '''Find the device, connect and call func(dev, *func_args).'''
+    target = args.address or args.name or 'Coospo compatible device'
     print(f"Searching for {target}...")
-    device = await dev.discover(args.name, args.address, args.scan_timeout)
+    device = await CoospoDevice().discover(args.name, args.address, args.scan_timeout)
     if device is None:
         print(f"Error: {target} not found. Make sure the device is on and not connected to the "
               "phone app.", file=sys.stderr)
         return 1
+    return await run_session(device, func, *func_args)
 
-    try:
-        async with BleakClient(device, timeout=60.0) as client:
-            print(f"Connected to {device.name or device.address}")
-            await dev.start(client)
-            return await args.func(dev, args)
-    except asyncio.TimeoutError:
-        print("Error: no response from the device.", file=sys.stderr)
-    except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
-    return 1
+
+async def cmd_info(args):
+    return await with_device(args, show_info, args)
+
+
+async def cmd_get(args):
+    return await with_device(args, get_files, args)
+
+
+async def cmd_init(args):
+    index = Index(index_path())
+    return await with_device(args, init_job, index, staging_dir(), args.since)
+
+
+async def cmd_sync(args):
+    index = Index(index_path())
+    rc = await with_device(args, sync_job, index, staging_dir(), keep_dir(args), args.post_sync)
+    # Also when the device was not found: earlier downloads may still wait for the command.
+    if args.post_sync and await run_hooks(index, args.post_sync):
+        rc = 1
+    return rc
+
+
+async def cmd_watch(args):
+    index = Index(index_path())
+    if args.post_sync and not index.any_baselined():
+        print("Error: no device has a baseline yet; run 'coospo init' first, or all activities "
+              "on the device would be passed to the post-sync command.", file=sys.stderr)
+        return 2
+    sys.stdout.reconfigure(line_buffering=True)  # logs go to a pipe or file under a service manager
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    await watch(args, index, keep_dir(args))
 
 
 def parse_args(argv=None):
@@ -86,22 +101,27 @@ def parse_args(argv=None):
         prog='coospo',
         description='Command-line tool for COOSPO CS500/CS600 bike computers over Bluetooth LE.',
         epilog='''examples:
-  coospo info                            show device status
-  coospo sync                            download new activities into fit_files/
-  coospo sync -o ~/rides                 ... into another directory
-  coospo get filelist.txt Setting.json   download specific files
-  coospo -n CS500-1234567 info           pick one of several devices
+  coospo info                              show device status
+  coospo sync                              download new activities
+  coospo sync -o ~/rides                   ... and keep them in another directory
+  coospo init                              ignore the activities already on the device
+  coospo watch --post-sync ./upload.sh     sync whenever the device is in range, then upload
+  coospo get filelist.txt Setting.json     download specific files
+  coospo -n CS500-1234567 info             pick one of several devices
 
-The device must not be connected to the phone app at the same time.''',
+Settings can also be put in ~/.config/coospo/config.toml (name, address, scan_timeout, output,
+post_sync, interval). The device must not be connected to the phone app at the same time.''',
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('-V', '--version', action='version', version=f'%(prog)s {__version__}')
+    parser.add_argument('-c', '--config', metavar='FILE', default=config_path(),
+                        help='config file (default: %(default)s)')
     parser.add_argument('-n', '--name', metavar='NAME',
                         help='connect to the device whose Bluetooth name contains NAME '
                              '(default: the first one whose name starts with CS500 or CS600)')
     parser.add_argument('-a', '--address', metavar='ADDR',
                         help='connect to the device with this Bluetooth address instead')
-    parser.add_argument('-t', '--scan-timeout', type=float, default=30.0, metavar='SEC',
-                        help='how long to search for the device (default: %(default)s)')
+    parser.add_argument('-t', '--scan-timeout', type=float, metavar='SEC',
+                        help='how long to search for the device (default: 30)')
     commands = parser.add_subparsers(dest='command', metavar='COMMAND', required=True)
 
     p = commands.add_parser(
@@ -110,31 +130,65 @@ The device must not be connected to the phone app at the same time.''',
                     'and memory usage.')
     p.set_defaults(func=cmd_info)
 
+    def add_sync_options(p):
+        p.add_argument('-o', '--output', metavar='DIR',
+                       help='keep the activities in DIR (default: only with no --post-sync, in '
+                            f'{default_output()})')
+        p.add_argument('-p', '--post-sync', metavar='CMD',
+                       help='run CMD FILE for every new activity, e.g. an uploader; it is retried '
+                            'with growing delays until it exits 0, and the downloaded file is '
+                            'deleted afterwards unless --output is given')
+
     p = commands.add_parser(
         'sync', help='download new activities (.fit files)',
-        description='Download filelist.txt and every activity (.fit) that is not already in the '
-                    'output directory. Nothing is deleted from the device.')
-    p.add_argument('-o', '--output', default=FIT_FOLDER, metavar='DIR',
-                   help='output directory (default: %(default)s)')
+        description='Download every activity the index (~/.local/state/coospo/index.db) does not '
+                    'know yet, then run the post-sync command on the ones it has not succeeded '
+                    'on. Nothing is deleted from the device.')
+    add_sync_options(p)
     p.set_defaults(func=cmd_sync)
+
+    p = commands.add_parser(
+        'init', help='ignore the activities already on the device',
+        description='Record the activities currently on the device as handled, so that sync and '
+                    'watch only pass new ones to the post-sync command. Required once per device '
+                    'before using --post-sync.')
+    p.add_argument('--since', metavar='YYYYMMDD',
+                   help='keep activities from this date on as new')
+    p.set_defaults(func=cmd_init)
+
+    p = commands.add_parser(
+        'watch', help='sync whenever the device is in range',
+        description='Run until stopped; whenever the device is seen, sync it like `coospo sync` '
+                    'does, at most once per interval.')
+    add_sync_options(p)
+    p.add_argument('-i', '--interval', type=float, metavar='SEC',
+                   help='minimum time between two syncs of the same device (default: 600)')
+    p.set_defaults(func=cmd_watch)
 
     p = commands.add_parser(
         'get', help='download files by name',
         description='Download files from the device by name, e.g. filelist.txt, Setting.json or '
-                    'an activity such as 20260101080000.fit. Existing files are overwritten.')
+                    'an activity such as 20260101080000.fit. Existing files are overwritten; the '
+                    'index is not used.')
     p.add_argument('files', nargs='+', metavar='FILE', help='name of a file on the device')
-    p.add_argument('-o', '--output', default=FIT_FOLDER, metavar='DIR',
-                   help='output directory (default: %(default)s)')
+    p.add_argument('-o', '--output', metavar='DIR',
+                   help=f'output directory (default: {default_output()})')
     p.set_defaults(func=cmd_get)
 
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    config = load_config(args.config, DEFAULTS.keys())
+    for key, default in DEFAULTS.items():
+        if getattr(args, key, False) is None:
+            setattr(args, key, config.get(key, default))
+    return args
 
 
 def run():
     """Entry point of the coospo command."""
     # bleak on BlueZ warns about the MTU on every connection; it is harmless here.
     warnings.filterwarnings('ignore', message='Using default MTU value')
+    args = parse_args()
     try:
-        sys.exit(asyncio.run(main(parse_args())))
+        sys.exit(asyncio.run(args.func(args)))
     except KeyboardInterrupt:
         sys.exit(130)

@@ -1,0 +1,7 @@
+{
+  "client_id": "12345",
+  "client_secret": "0123456789abcdef0123456789abcdef01234567",
+  "access_token": "fedcba9876543210fedcba9876543210fedcba98",
+  "refresh_token": "89abcdef0123456789abcdef0123456789abcdef",
+  "expires_at": 0
+}

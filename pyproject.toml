@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "coospo-cli"
-version = "0.1.0"
+version = "0.2.0"
 description = "Command-line tool for COOSPO CS500/CS600 bike computers: device info, battery, memory usage and FIT file download over Bluetooth LE"
 readme = "README.md"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
-requires-python = ">=3.9"
+requires-python = ">=3.13"
 dependencies = ["bleak>=0.22"]
 keywords = ["coospo", "cs500", "cs600", "bike computer", "cycling", "fit", "bluetooth", "ble"]
 classifiers = [

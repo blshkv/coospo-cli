@@ -1,0 +1,22 @@
+# Sample coospo config. Copy it to ~/.config/coospo/config.toml
+# ($XDG_CONFIG_HOME/coospo/config.toml if that variable is set), or pass another file with -c.
+# Every setting is optional; command-line options override the file.
+
+# Connect to the device whose Bluetooth name contains this (default: any CS500 or CS600).
+# name = "CS500-1234567"
+
+# Connect to this Bluetooth address instead.
+# address = "AA:BB:CC:DD:EE:FF"
+
+# Seconds to search for the device (default: 30).
+# scan_timeout = 30
+
+# Keep downloaded activities in this directory. Without it, files are deleted once post_sync
+# succeeds, and kept in ~/.local/share/coospo/fit_files if there is no post_sync.
+# output = "~/rides"
+
+# Command run as "CMD FILE" for every new activity, e.g. an uploader. Run `coospo init` first.
+# post_sync = "/home/me/bin/strava-upload"
+
+# `coospo watch`: minimum seconds between two syncs of the same device (default: 600).
+# interval = 600
